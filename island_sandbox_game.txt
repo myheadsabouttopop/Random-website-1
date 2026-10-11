@@ -1,0 +1,1106 @@
+# ====================================================================
+#  CASTAWAY COLONY - an open-ended island sandbox game (Python 3)
+#  To play: save this file as colony.py, then run:
+#       python colony.py
+# ====================================================================
+#  There is no final boss and no "end". You lead a group of
+#  shipwreck survivors on a wild island. Gather, build, craft,
+#  research, explore, trade... and deal with whatever the island
+#  throws at you: storms, fires, sickness, raiders, droughts, rats,
+#  winter, arguments, and more. Build whatever colony you want.
+#  Your game can be saved and loaded (island_save.json).
+# ====================================================================
+
+import json
+import random
+
+SAVE_FILE = "island_save.json"
+SEASONS = ["Spring", "Summer", "Autumn", "Winter"]   # 10 days each
+
+DIFFS = {  # name, daily event chance, raider strength multiplier
+    "1": ("Relaxed", 0.25, 0.7),
+    "2": ("Normal", 0.45, 1.0),
+    "3": ("Brutal", 0.65, 1.4),
+    "4": ("Creative (no problems, lots of resources)", 0.0, 1.0),
+}
+
+BUILDINGS = {
+    "Hut": {"cost": {"wood": 10}, "req": None, "max": 99,
+            "desc": "Housing for 3 more settlers"},
+    "Well": {"cost": {"wood": 6, "stone": 8}, "req": None, "max": 99,
+             "desc": "+5 water every day"},
+    "Farm": {"cost": {"wood": 12, "stone": 2}, "req": None, "max": 99,
+             "desc": "Room for 2 Farmers"},
+    "Quarry": {"cost": {"wood": 10, "stone": 2}, "req": None, "max": 99,
+               "desc": "Room for 2 Quarriers"},
+    "Storehouse": {"cost": {"wood": 15, "stone": 6}, "req": None, "max": 99,
+                   "desc": "+40 storage space for each resource"},
+    "Workshop": {"cost": {"wood": 15, "stone": 10}, "req": None, "max": 1,
+                 "desc": "Lets you craft swords and unlocks advanced buildings"},
+    "Palisade": {"cost": {"wood": 20, "stone": 10}, "req": None, "max": 5,
+                 "desc": "+8 defense against raiders and beasts"},
+    "Watchtower": {"cost": {"wood": 15, "stone": 12}, "req": None, "max": 5,
+                   "desc": "+5 defense"},
+    "Tavern": {"cost": {"wood": 20, "stone": 8}, "req": None, "max": 3,
+               "desc": "+3 morale every day"},
+    "Storm Shelter": {"cost": {"wood": 15, "stone": 15}, "req": None, "max": 1,
+                      "desc": "Greatly reduces storm damage"},
+    "Clinic": {"cost": {"wood": 15, "stone": 10}, "req": ("building", "Workshop"),
+               "max": 2, "desc": "Room for 1 Healer; lets you brew medicine"},
+    "Library": {"cost": {"wood": 20, "stone": 15}, "req": ("building", "Workshop"),
+                "max": 1, "desc": "Room for 2 Scholars; unlocks studying"},
+    "Dock": {"cost": {"wood": 20, "stone": 5}, "req": ("area", "Beach Cove"),
+             "max": 3, "desc": "Room for 3 Fishers; ships visit more often"},
+    "Mine": {"cost": {"wood": 20, "stone": 12}, "req": ("area", "Echo Cave"),
+             "max": 3, "desc": "Room for 2 Miners (they dig metal)"},
+}
+
+# job name -> (building needed or None, workers per building)
+JOBS = {
+    "Farmer": ("Farm", 2),
+    "Woodcutter": (None, 0),
+    "Quarrier": ("Quarry", 2),
+    "Fisher": ("Dock", 3),
+    "Miner": ("Mine", 2),
+    "Guard": (None, 0),
+    "Healer": ("Clinic", 1),
+    "Scholar": ("Library", 2),
+}
+
+RECIPES = {
+    "Axe": {"cost": {"wood": 6, "stone": 4}, "req": None, "kind": "tool",
+            "desc": "+3 wood when you chop"},
+    "Pickaxe": {"cost": {"wood": 6, "stone": 4}, "req": None, "kind": "tool",
+                "desc": "+2 stone when you mine, and lets you dig metal"},
+    "Fishing Rod": {"cost": {"wood": 5, "stone": 1}, "req": None, "kind": "tool",
+                    "desc": "+3 food when you fish"},
+    "Spear": {"cost": {"wood": 5, "stone": 2}, "req": None, "kind": "tool",
+              "desc": "Lets you hunt (needs the Old Forest)"},
+    "Sword": {"cost": {"metal": 3, "wood": 1}, "req": "Workshop", "kind": "tool",
+              "desc": "Arms one guard for extra defense (can make many)"},
+    "Medicine": {"cost": {"herbs": 2}, "req": "Clinic", "kind": "item",
+                 "desc": "Cures 2 sick settlers"},
+}
+
+TECHS = {
+    "Irrigation": (10, "Farmers produce +2 food"),
+    "Masonry": (12, "Palisades give +4 extra defense"),
+    "Herbalism": (10, "Healers cure twice as many; fewer illness deaths"),
+    "Navigation": (15, "More ships visit; fishers produce +1 food"),
+    "Metallurgy": (20, "Swords and miners are stronger"),
+}
+
+AREAS = {
+    "Beach Cove": {"text": "A sheltered cove full of fish. You can build Docks here.",
+                   "bonus": {"food": 8, "wood": 4}},
+    "Old Forest": {"text": "Tall trees and plenty of game. You can now hunt (with a spear).",
+                   "bonus": {"wood": 10}},
+    "Echo Cave": {"text": "A deep cave glittering with ore. You can build Mines here.",
+                  "bonus": {"stone": 8, "metal": 3}},
+    "Jungle Edge": {"text": "Strange plants grow here. You can now forage herbs.",
+                    "bonus": {"herbs": 4}},
+    "Shipwreck": {"text": "An old wreck on the rocks, still full of goodies.",
+                  "bonus": {"cloth": 4, "metal": 4, "gold": 25}},
+    "Ruined Temple": {"text": "Ancient ruins hide forgotten knowledge.",
+                      "bonus": {"knowledge": 6, "gold": 15}},
+    "Hot Spring": {"text": "Steaming, soothing water. Everyone feels better just hearing about it.",
+                   "bonus": {"morale": 10}},
+    "Misty Peak": {"text": "From the top you spot sails on the horizon. Ships will visit more often.",
+                   "bonus": {"gold": 10}},
+}
+
+SELL = {"wood": 1, "stone": 2, "food": 1, "water": 1, "metal": 6,
+        "cloth": 4, "herbs": 3, "medicine": 8}
+
+RES_NAMES = ["wood", "stone", "food", "water", "metal", "cloth",
+             "herbs", "medicine", "gold", "knowledge"]
+
+
+# ============================ helpers ============================
+
+def ask(prompt, valid):
+    while True:
+        answer = input(prompt).strip().lower()
+        if answer in valid:
+            return answer
+        print("Invalid choice, try again.")
+
+
+def ask_int(prompt, lo, hi):
+    while True:
+        answer = input(prompt).strip()
+        if answer.isdigit() and lo <= int(answer) <= hi:
+            return int(answer)
+        print(f"Please enter a number from {lo} to {hi}.")
+
+
+def season_name(s):
+    return SEASONS[((s["day"] - 1) // 10) % 4]
+
+
+def housing(s):
+    return 4 + 3 * s["buildings"].get("Hut", 0)
+
+
+def cap_of(s):
+    if s["creative"]:
+        return 999
+    return 60 + 40 * s["buildings"].get("Storehouse", 0)
+
+
+def add(s, name, amount):
+    if amount <= 0:
+        return 0
+    if name in ("gold", "knowledge"):
+        s["res"][name] += amount
+        return amount
+    room = max(0, cap_of(s) - s["res"][name])
+    got = min(amount, room)
+    s["res"][name] += got
+    return got
+
+
+def cost_text(cost):
+    return ", ".join(f"{v} {k}" for k, v in cost.items())
+
+
+def can_afford(s, cost):
+    return all(s["res"][k] >= v for k, v in cost.items())
+
+
+def pay(s, cost):
+    for k, v in cost.items():
+        s["res"][k] -= v
+
+
+def total_buildings(s):
+    return sum(s["buildings"].values())
+
+
+def job_cap(s, job):
+    building, per = JOBS[job]
+    if building is None:
+        return s["pop"]
+    return s["buildings"].get(building, 0) * per
+
+
+def fix_jobs(s):
+    for job in JOBS:
+        s["jobs"][job] = min(s["jobs"][job], job_cap(s, job))
+    total = sum(s["jobs"].values())
+    for job in reversed(list(JOBS)):
+        while total > s["pop"] and s["jobs"][job] > 0:
+            s["jobs"][job] -= 1
+            total -= 1
+
+
+def idle_settlers(s):
+    return max(0, s["pop"] - sum(s["jobs"].values()))
+
+
+def lose_settlers(s, n, why):
+    n = min(n, s["pop"])
+    if n <= 0:
+        return
+    s["pop"] -= n
+    s["sick"] = min(s["sick"], s["pop"])
+    s["morale"] = max(0, s["morale"] - 5 * n)
+    print(f"  !! You lost {n} settler{'s' if n > 1 else ''} to {why}.")
+    fix_jobs(s)
+
+
+def defense(s):
+    b = s["buildings"]
+    t = s["tech"]
+    guards = s["jobs"]["Guard"]
+    swords = s["tools"].get("Sword", 0)
+    d = guards * 3
+    d += min(guards, swords) * (3 if "Metallurgy" in t else 2)
+    d += b.get("Palisade", 0) * (8 + (4 if "Masonry" in t else 0))
+    d += b.get("Watchtower", 0) * 5
+    d += s["pop"] // 2
+    return d
+
+
+def work_factor(s):
+    if s["pop"] <= 0:
+        return 0
+    return max(0.2, (s["pop"] - s["sick"]) / s["pop"])
+
+
+def morale_mult(s):
+    if s["morale"] >= 80:
+        return 1.1
+    if s["morale"] < 30:
+        return 0.75
+    return 1.0
+
+
+def score(s):
+    return (s["day"] * 10 + s["pop"] * 25 + total_buildings(s) * 5
+            + s["res"]["gold"] + len(s["ach"]) * 50)
+
+
+# ============================ new game ============================
+
+def new_colony():
+    print("\nChoose a difficulty:")
+    for key, (name, _, _) in DIFFS.items():
+        print(f"  {key}) {name}")
+    diff = ask("> ", list(DIFFS.keys()))
+    cname = input("Name your colony: ").strip() or "Castaway Colony"
+    creative = diff == "4"
+    start = 150 if creative else 0
+    s = {
+        "name": cname, "diff": diff, "creative": creative,
+        "ev_chance": DIFFS[diff][1], "raid_mult": DIFFS[diff][2],
+        "day": 1, "ap": 3, "pop": 6 if creative else 4, "sick": 0, "morale": 70,
+        "res": {
+            "wood": start or 15, "stone": start or 8, "food": start or 20,
+            "water": start or 20, "metal": start, "cloth": start,
+            "herbs": start, "medicine": start // 5, "gold": start,
+            "knowledge": 0,
+        },
+        "buildings": {}, "tools": {}, "tech": [], "areas": [], "ach": [],
+        "jobs": {job: 0 for job in JOBS},
+        "weather": "Clear", "ship": 0, "hunger": 0, "thirst": 0,
+        "drought": 0, "raids_won": 0,
+    }
+    print(f"\nYour ship was wrecked in a storm. {s['pop']} survivors drag themselves")
+    print(f"onto a beach. This will be the home of {cname}. Good luck!")
+    return s
+
+
+# ============================ display ============================
+
+def header(s):
+    r = s["res"]
+    print("\n" + "=" * 56)
+    print(f" {s['name']} | Day {s['day']} ({season_name(s)}, {s['weather']}) | Actions: {s['ap']}")
+    print(f" Settlers {s['pop']}/{housing(s)} (sick {s['sick']}) | Morale {s['morale']}/100")
+    print(f" Wood {r['wood']}  Stone {r['stone']}  Food {r['food']}  Water {r['water']}  Gold {r['gold']}")
+    if s["ship"] > 0:
+        print(" ** A trading ship is anchored nearby! **")
+
+
+def report(s):
+    r = s["res"]
+    print("\n" + "-" * 20 + " COLONY REPORT " + "-" * 20)
+    print(f"Day {s['day']}, {season_name(s)} ({s['weather']})   Score: {score(s)}")
+    print(f"Settlers {s['pop']}/{housing(s)}   Sick {s['sick']}   Idle {idle_settlers(s)}   Morale {s['morale']}")
+    print(f"Defense: {defense(s)}   Storage cap: {cap_of(s)}")
+    print("Resources: " + "  ".join(f"{k} {v}" for k, v in r.items()))
+    jobs = ", ".join(f"{k} {v}" for k, v in s["jobs"].items() if v > 0)
+    print("Jobs: " + (jobs if jobs else "nobody assigned"))
+    blds = ", ".join(f"{k} x{v}" for k, v in s["buildings"].items() if v > 0)
+    print("Buildings: " + (blds if blds else "none yet"))
+    tools = ", ".join(f"{k} x{v}" if v > 1 else k for k, v in s["tools"].items())
+    print("Tools: " + (tools if tools else "none"))
+    print("Research: " + (", ".join(s["tech"]) if s["tech"] else "none"))
+    print("Discovered: " + (", ".join(s["areas"]) if s["areas"] else "nothing yet"))
+    print(f"Achievements: {len(s['ach'])}/{len(ACHIEVEMENTS)}")
+    for title in s["ach"]:
+        print("   * " + title)
+
+
+# ============================ player actions ============================
+
+def gather(s):
+    if s["ap"] < 1:
+        print("You're out of actions today. End the day to rest.")
+        return
+    t = s["tools"]
+    options = []   # (label, key)
+    options.append((f"Chop wood (about {4 + (3 if 'Axe' in t else 0)})", "wood"))
+    options.append((f"Mine stone (about {3 + (2 if 'Pickaxe' in t else 0)})", "stone"))
+    options.append(("Fetch water (about 5)", "water"))
+    options.append((f"Fish (about {3 + (3 if 'Fishing Rod' in t else 0)})", "fish"))
+    if "Jungle Edge" in s["areas"]:
+        options.append(("Forage herbs and berries", "forage"))
+    if "Echo Cave" in s["areas"] and "Pickaxe" in t:
+        options.append(("Dig for metal ore", "metal"))
+    if "Old Forest" in s["areas"] and "Spear" in t:
+        options.append(("Hunt game (about 7 food, risky)", "hunt"))
+    print("\nWhat do you want to do?")
+    for i, (label, _) in enumerate(options, 1):
+        print(f"  {i}) {label}")
+    print("  0) Cancel")
+    c = ask_int("> ", 0, len(options))
+    if c == 0:
+        return
+    key = options[c - 1][1]
+    s["ap"] -= 1
+    v = random.randint(-1, 1)
+    if key == "wood":
+        got = add(s, "wood", max(1, 4 + v + (3 if "Axe" in t else 0)))
+        print(f"You chop trees and haul back {got} wood.")
+    elif key == "stone":
+        got = add(s, "stone", max(1, 3 + v + (2 if "Pickaxe" in t else 0)))
+        print(f"You break rocks and gather {got} stone.")
+    elif key == "water":
+        got = add(s, "water", 5 + v)
+        print(f"You fill the barrels with {got} water.")
+    elif key == "fish":
+        got = add(s, "food", max(1, 3 + v + (3 if "Fishing Rod" in t else 0)))
+        print(f"You catch fish worth {got} food.")
+    elif key == "forage":
+        herbs = add(s, "herbs", random.randint(1, 3))
+        food = add(s, "food", 2)
+        print(f"You find {herbs} herbs and {food} food in the undergrowth.")
+    elif key == "metal":
+        got = add(s, "metal", 2 + (1 if "Metallurgy" in s["tech"] else 0))
+        print(f"You pry loose {got} metal ore.")
+    elif key == "hunt":
+        if random.random() < 0.2:
+            s["morale"] = max(0, s["morale"] - 4)
+            print("The boar charges! You escape, but you're shaken. (-4 morale)")
+        else:
+            got = add(s, "food", 7 + v)
+            print(f"A successful hunt! You bring back {got} food.")
+
+
+def build_menu(s):
+    if s["ap"] < 1:
+        print("You're out of actions today. End the day to rest.")
+        return
+    avail = []
+    for name, d in BUILDINGS.items():
+        req = d["req"]
+        if req is None:
+            avail.append(name)
+        elif req[0] == "area" and req[1] in s["areas"]:
+            avail.append(name)
+        elif req[0] == "building" and s["buildings"].get(req[1], 0) > 0:
+            avail.append(name)
+    print("\nWhat do you want to build?")
+    for i, name in enumerate(avail, 1):
+        d = BUILDINGS[name]
+        have = s["buildings"].get(name, 0)
+        print(f"  {i}) {name} (have {have}) - {cost_text(d['cost'])}")
+        print(f"       {d['desc']}")
+    print("  0) Cancel")
+    c = ask_int("> ", 0, len(avail))
+    if c == 0:
+        return
+    name = avail[c - 1]
+    d = BUILDINGS[name]
+    if s["buildings"].get(name, 0) >= d["max"]:
+        print(f"You already have the maximum number of {name}s.")
+        return
+    if not can_afford(s, d["cost"]):
+        print(f"You can't afford that. It needs {cost_text(d['cost'])}.")
+        return
+    pay(s, d["cost"])
+    s["buildings"][name] = s["buildings"].get(name, 0) + 1
+    s["ap"] -= 1
+    print(f"Your settlers build a {name}!")
+
+
+def craft_menu(s):
+    if s["ap"] < 1:
+        print("You're out of actions today. End the day to rest.")
+        return
+    avail = []
+    for name, d in RECIPES.items():
+        if d["req"] is None or s["buildings"].get(d["req"], 0) > 0:
+            avail.append(name)
+    print("\nWhat do you want to craft?")
+    for i, name in enumerate(avail, 1):
+        d = RECIPES[name]
+        owned = s["tools"].get(name, 0) if d["kind"] == "tool" else s["res"].get("medicine", 0)
+        print(f"  {i}) {name} (have {owned}) - {cost_text(d['cost'])}")
+        print(f"       {d['desc']}")
+    print("  0) Cancel")
+    c = ask_int("> ", 0, len(avail))
+    if c == 0:
+        return
+    name = avail[c - 1]
+    d = RECIPES[name]
+    if d["kind"] == "tool" and name != "Sword" and s["tools"].get(name, 0) >= 1:
+        print(f"You already own a {name}.")
+        return
+    if not can_afford(s, d["cost"]):
+        print(f"You can't afford that. It needs {cost_text(d['cost'])}.")
+        return
+    pay(s, d["cost"])
+    s["ap"] -= 1
+    if name == "Medicine":
+        add(s, "medicine", 1)
+    else:
+        s["tools"][name] = s["tools"].get(name, 0) + 1
+    print(f"You crafted: {name}.")
+
+
+def explore(s):
+    if s["ap"] < 1:
+        print("You're out of actions today. End the day to rest.")
+        return
+    s["ap"] -= 1
+    print("\nYou set out to explore the island...")
+    unknown = [a for a in AREAS if a not in s["areas"]]
+    if unknown and random.random() < 0.65:
+        area = random.choice(unknown)
+        s["areas"].append(area)
+        print(f"** You discover the {area}! **")
+        print(AREAS[area]["text"])
+        gains = []
+        for k, v in AREAS[area]["bonus"].items():
+            if k == "morale":
+                s["morale"] = min(100, s["morale"] + v)
+                gains.append(f"+{v} morale")
+            else:
+                got = add(s, k, v)
+                gains.append(f"+{got} {k}")
+        print("You return with: " + ", ".join(gains))
+    else:
+        res = random.choice(["wood", "stone", "food", "herbs", "cloth", "metal", "gold"])
+        amount = random.randint(3, 8)
+        got = add(s, res, amount)
+        print(f"You wander for hours and come back with {got} {res}.")
+    r = random.random()
+    if r < 0.15:
+        s["morale"] = max(0, s["morale"] - 4)
+        print("You twist your ankle on the way home. (-4 morale)")
+    elif r < 0.25:
+        d = defense(s)
+        if d >= 12 or random.random() < 0.5:
+            print("A wild boar charges you, but you scare it off.")
+        else:
+            s["sick"] = min(s["pop"], s["sick"] + 1)
+            print("A wild animal bites a scout. One settler is hurt and out of action.")
+
+
+def jobs_menu(s):
+    names = list(JOBS)
+    while True:
+        idle = idle_settlers(s)
+        print(f"\nSettlers: {s['pop']}  (idle {idle}, sick {s['sick']})")
+        for i, n in enumerate(names, 1):
+            building, _ = JOBS[n]
+            cap = "any" if building is None else str(job_cap(s, n))
+            note = "" if building is None else f"  [needs {building}]"
+            print(f"  {i}) {n:<11} {s['jobs'][n]} / {cap}{note}")
+        print("  0) Done")
+        c = ask_int("Job to change: ", 0, len(names))
+        if c == 0:
+            return
+        job = names[c - 1]
+        maxn = min(job_cap(s, job), s["jobs"][job] + idle)
+        if maxn <= 0:
+            print("You can't assign anyone there (no building, or no idle settlers).")
+            continue
+        n = ask_int(f"How many {job}s (0-{maxn})? ", 0, maxn)
+        s["jobs"][job] = n
+
+
+def research_menu(s):
+    while True:
+        print(f"\nKnowledge: {s['res']['knowledge']}")
+        keys = []
+        for name, (cost, desc) in TECHS.items():
+            if name in s["tech"]:
+                print(f"  [learned] {name} - {desc}")
+            else:
+                keys.append(name)
+                print(f"  {len(keys)}) {name} ({cost} knowledge) - {desc}")
+        if s["buildings"].get("Library", 0) > 0:
+            print("  S) Study at the library (1 action, +3 knowledge)")
+        print("  0) Back")
+        valid = ["0"] + [str(i) for i in range(1, len(keys) + 1)]
+        if s["buildings"].get("Library", 0) > 0:
+            valid.append("s")
+        c = ask("> ", valid)
+        if c == "0":
+            return
+        if c == "s":
+            if s["ap"] < 1:
+                print("You're out of actions today.")
+            else:
+                s["ap"] -= 1
+                add(s, "knowledge", 3)
+                print("You spend hours with the old books. +3 knowledge.")
+            continue
+        name = keys[int(c) - 1]
+        cost = TECHS[name][0]
+        if s["res"]["knowledge"] < cost:
+            print("Not enough knowledge yet. Build a Library and assign Scholars!")
+        else:
+            s["res"]["knowledge"] -= cost
+            s["tech"].append(name)
+            print(f"** Research complete: {name}! **")
+
+
+def trade(s):
+    if s["ship"] <= 0:
+        print("There's no trading ship here right now.")
+        return
+    print("\n~ The ship's captain waves you over ~")
+    names = list(SELL)
+    while True:
+        print(f"\nYou have {s['res']['gold']} gold.")
+        print("1) Sell goods   2) Buy goods   3) Leave")
+        c = ask("> ", ["1", "2", "3"])
+        if c == "3":
+            return
+        if c == "1":
+            have = [n for n in names if s["res"][n] > 0]
+            if not have:
+                print("You have nothing to sell.")
+                continue
+            for i, n in enumerate(have, 1):
+                print(f"  {i}) {n} x{s['res'][n]} - {SELL[n]}g each")
+            print("  0) Cancel")
+            k = ask_int("> ", 0, len(have))
+            if k == 0:
+                continue
+            n = have[k - 1]
+            q = ask_int(f"How many {n} (1-{s['res'][n]})? ", 1, s["res"][n])
+            s["res"][n] -= q
+            s["res"]["gold"] += q * SELL[n]
+            print(f"Sold {q} {n} for {q * SELL[n]} gold.")
+        else:
+            for i, n in enumerate(names, 1):
+                print(f"  {i}) {n} - {SELL[n] * 2 + 1}g each")
+            print("  0) Cancel")
+            k = ask_int("> ", 0, len(names))
+            if k == 0:
+                continue
+            n = names[k - 1]
+            price = SELL[n] * 2 + 1
+            maxq = min(s["res"]["gold"] // price, max(0, cap_of(s) - s["res"][n]))
+            if maxq <= 0:
+                print("You can't afford any, or you have no room to store it.")
+                continue
+            q = ask_int(f"How many {n} (1-{maxq})? ", 1, maxq)
+            s["res"]["gold"] -= q * price
+            s["res"][n] += q
+            print(f"Bought {q} {n} for {q * price} gold.")
+
+
+def use_medicine(s):
+    if s["sick"] <= 0:
+        print("Nobody is sick right now.")
+    elif s["res"]["medicine"] <= 0:
+        print("You don't have any medicine.")
+    else:
+        s["res"]["medicine"] -= 1
+        cured = min(2, s["sick"])
+        s["sick"] -= cured
+        print(f"You hand out medicine. {cured} settler(s) recover.")
+
+
+# ============================ random events ============================
+
+def ev_storm(s):
+    print("\n[STORM] Howling winds and lashing rain hit the island!")
+    shelter = s["buildings"].get("Storm Shelter", 0) > 0
+    if shelter:
+        print("Your Storm Shelter keeps everyone safe.")
+        lost = random.randint(0, 4)
+    else:
+        lost = random.randint(5, 12)
+        owned = [b for b, n in s["buildings"].items() if n > 0 and b != "Storm Shelter"]
+        if owned and random.random() < 0.35:
+            victim = random.choice(owned)
+            s["buildings"][victim] -= 1
+            print(f"The storm wrecks one of your {victim}s!")
+            fix_jobs(s)
+    s["res"]["wood"] = max(0, s["res"]["wood"] - lost)
+    print(f"Supplies are washed away: -{lost} wood.")
+    s["morale"] = max(0, s["morale"] - (2 if shelter else 6))
+
+
+def ev_fire(s):
+    print("\n[FIRE] A cooking fire gets out of control!")
+    wells = s["buildings"].get("Well", 0)
+    lost = random.randint(8, 15) // (2 if wells else 1)
+    s["res"]["wood"] = max(0, s["res"]["wood"] - lost)
+    print(f"The flames burn {lost} wood.")
+    if wells:
+        print("Your wells let everyone put it out quickly.")
+    elif s["buildings"].get("Hut", 0) > 0 and random.random() < 0.3:
+        s["buildings"]["Hut"] -= 1
+        print("A hut burns to the ground!")
+    s["morale"] = max(0, s["morale"] - 4)
+
+
+def ev_rats(s):
+    print("\n[RATS] Rats got into the food stores!")
+    lost = max(1, int(s["res"]["food"] * 0.2))
+    s["res"]["food"] -= lost
+    print(f"You lose {lost} food.")
+
+
+def ev_sickness(s):
+    n = random.randint(1, max(2, s["pop"] // 3))
+    if s["buildings"].get("Clinic", 0) > 0:
+        n = max(1, n // 2)
+    n = min(n, s["pop"] - s["sick"])
+    if n <= 0:
+        return
+    s["sick"] += n
+    s["morale"] = max(0, s["morale"] - 4)
+    print(f"\n[SICKNESS] A fever spreads through camp. {n} settler(s) fall ill.")
+    if s["res"]["medicine"] > 0:
+        print("(You have medicine. Use it from the main menu, or it's used when needed.)")
+
+
+def ev_raiders(s):
+    strength = int((10 + s["day"] * 0.6 + random.randint(0, 8)) * s["raid_mult"])
+    d = defense(s)
+    print("\n[RAIDERS] A band of pirates lands on your beach!")
+    print(f"Their strength is about {strength}. Your defense is {d}.")
+    print("1) Stand and fight   2) Pay them off   3) Hide in the hills")
+    c = ask("> ", ["1", "2", "3"])
+    if c == "1":
+        chance = min(0.95, 1.1 * d / (d + strength))
+        if random.random() < chance:
+            loot = random.randint(10, 30)
+            s["res"]["gold"] += loot
+            s["morale"] = min(100, s["morale"] + 8)
+            s["raids_won"] += 1
+            print(f"You drive the pirates off! You find {loot} gold on the beach.")
+        else:
+            print("The pirates overwhelm your defenders and ransack the camp!")
+            for k in ("wood", "stone", "food", "metal"):
+                s["res"][k] = int(s["res"][k] * 0.75)
+            lose_settlers(s, random.randint(1, 2), "the raid")
+    elif c == "2":
+        tribute = strength
+        if s["res"]["gold"] >= tribute:
+            s["res"]["gold"] -= tribute
+            print(f"You hand over {tribute} gold. The pirates sail away laughing.")
+        else:
+            print("You don't have enough gold, so they take supplies instead.")
+            for k in ("wood", "food", "stone"):
+                s["res"][k] = int(s["res"][k] * 0.7)
+        s["morale"] = max(0, s["morale"] - 5)
+    else:
+        print("Everyone scatters into the hills while the pirates loot the camp.")
+        for k in ("wood", "stone", "food", "water", "metal"):
+            s["res"][k] = int(s["res"][k] * 0.8)
+        if random.random() < 0.3:
+            lose_settlers(s, 1, "the pirates")
+        s["morale"] = max(0, s["morale"] - 6)
+
+
+def ev_beast(s):
+    print("\n[BEAST] A huge wild boar charges out of the jungle!")
+    if random.random() < min(0.9, defense(s) / 25):
+        print("Your defenders drive it off.")
+    else:
+        print("It tramples the camp before running away.")
+        s["res"]["food"] = max(0, s["res"]["food"] - 6)
+        if random.random() < 0.4:
+            lose_settlers(s, 1, "the beast's attack")
+        else:
+            s["sick"] = min(s["pop"], s["sick"] + 1)
+            print("One settler is badly hurt.")
+
+
+def ev_drought(s):
+    print("\n[DROUGHT] The rains fail and the springs run low!")
+    s["drought"] = 3
+    lost = s["res"]["water"] // 2
+    s["res"]["water"] -= lost
+    print(f"You lose {lost} water, and wells will give nothing for 3 days.")
+
+
+def ev_shipwreck(s):
+    print("\n[SURVIVORS] Three half-drowned sailors wash up on your beach.")
+    print("1) Take them in   2) Send them away")
+    c = ask("> ", ["1", "2"])
+    if c == "1":
+        room = housing(s) - s["pop"]
+        if room <= 0:
+            print("You have no room for them. You give them food and sadly send them on.")
+            s["res"]["food"] = max(0, s["res"]["food"] - 5)
+        else:
+            n = min(3, room)
+            s["pop"] += n
+            add(s, "cloth", 2)
+            s["morale"] = min(100, s["morale"] + 4)
+            print(f"{n} new settler(s) join the colony, bringing salvaged cloth!")
+    else:
+        s["morale"] = max(0, s["morale"] - 4)
+        print("You turn them away. People grumble about it for days.")
+
+
+def ev_argument(s):
+    print("\n[DRAMA] Two settlers get into a huge argument over who does the work.")
+    print("1) Hold a feast to calm everyone (costs 10 food)   2) Let them sort it out")
+    c = ask("> ", ["1", "2"])
+    if c == "1" and s["res"]["food"] >= 10:
+        s["res"]["food"] -= 10
+        s["morale"] = min(100, s["morale"] + 6)
+        print("Good food and good company fix everything. (+6 morale)")
+    else:
+        loss = 4 if s["buildings"].get("Tavern", 0) else 9
+        s["morale"] = max(0, s["morale"] - loss)
+        print(f"The fight drags on and sours the mood. (-{loss} morale)")
+
+
+def ev_cache(s):
+    print("\n[LUCKY FIND] A scout finds a washed-up supply crate!")
+    for k in random.sample(["wood", "stone", "food", "cloth", "metal", "herbs"], 3):
+        got = add(s, k, random.randint(3, 8))
+        print(f"  +{got} {k}")
+
+
+def ev_bounty(s):
+    print("\n[BOUNTY] A huge school of fish swims into the bay!")
+    got = add(s, "food", 15)
+    s["morale"] = min(100, s["morale"] + 3)
+    print(f"Everyone pitches in. +{got} food, and spirits rise!")
+
+
+def ev_wanderer(s):
+    print("\n[WANDERER] A lone traveler asks to join your colony.")
+    print("1) Welcome them   2) Send them away")
+    c = ask("> ", ["1", "2"])
+    if c == "1" and s["pop"] < housing(s):
+        s["pop"] += 1
+        print("The traveler joins you and says thanks.")
+    elif c == "1":
+        print("You have no room, so they move on.")
+    else:
+        print("The traveler walks off down the beach.")
+
+
+EVENTS = [
+    (6, ev_fire, lambda s: s["res"]["wood"] > 5),
+    (6, ev_rats, lambda s: s["res"]["food"] > 10),
+    (7, ev_sickness, lambda s: s["pop"] > s["sick"]),
+    (6, ev_raiders, lambda s: s["day"] > 5),
+    (4, ev_beast, lambda s: s["day"] > 3),
+    (4, ev_drought, lambda s: s["drought"] == 0),
+    (4, ev_shipwreck, lambda s: True),
+    (5, ev_argument, lambda s: s["pop"] >= 3),
+    (5, ev_cache, lambda s: True),
+    (4, ev_bounty, lambda s: True),
+    (3, ev_wanderer, lambda s: True),
+]
+
+
+def random_events(s):
+    if s["weather"] == "Storm" and not s["creative"]:
+        ev_storm(s)
+    if random.random() < s["ev_chance"]:
+        pool = [(w, f) for w, f, cond in EVENTS if cond(s)]
+        total = sum(w for w, _ in pool)
+        pick = random.uniform(0, total)
+        for w, f in pool:
+            pick -= w
+            if pick <= 0:
+                f(s)
+                break
+
+
+# ============================ day cycle ============================
+
+def produce(s):
+    mult = work_factor(s) * morale_mult(s)
+    j = s["jobs"]
+    t = s["tech"]
+    season = season_name(s)
+    gains = {}
+
+    def g(name, amount):
+        amt = int(amount * mult)
+        if amt > 0:
+            gains[name] = gains.get(name, 0) + add(s, name, amt)
+
+    farm = 4 + (2 if "Irrigation" in t else 0)
+    if season == "Winter":
+        farm //= 2
+    elif season == "Autumn":
+        farm = int(farm * 1.25)
+    elif season == "Spring":
+        farm += 1
+    g("food", j["Farmer"] * farm)
+    g("wood", j["Woodcutter"] * 3)
+    g("stone", j["Quarrier"] * 3)
+    g("food", j["Fisher"] * (3 + (1 if "Navigation" in t else 0)))
+    g("metal", j["Miner"] * (2 + (1 if "Metallurgy" in t else 0)))
+    g("knowledge", j["Scholar"] * 2)
+
+    wells = s["buildings"].get("Well", 0)
+    if s["drought"] > 0:
+        s["drought"] -= 1
+        if wells:
+            print("The drought keeps your wells dry today.")
+    elif wells:
+        gains["water"] = gains.get("water", 0) + add(s, "water", 5 * wells)
+    if s["weather"] == "Rain":
+        gains["water"] = gains.get("water", 0) + add(s, "water", 6)
+        print("Rain fills your barrels.")
+
+    if gains:
+        print("Production: " + ", ".join(f"+{v} {k}" for k, v in gains.items()))
+    else:
+        print("Production: nothing today.")
+
+
+def consume(s):
+    pop = s["pop"]
+    r = s["res"]
+    need_food = pop
+    need_water = pop + (pop // 2 if s["weather"] == "Heatwave" else 0)
+
+    if r["food"] >= need_food:
+        r["food"] -= need_food
+        s["hunger"] = 0
+    else:
+        r["food"] = 0
+        s["hunger"] += 1
+        s["morale"] = max(0, s["morale"] - 8)
+        print("  !! Not enough FOOD! The settlers go hungry.")
+    if r["water"] >= need_water:
+        r["water"] -= need_water
+        s["thirst"] = 0
+    else:
+        r["water"] = 0
+        s["thirst"] += 1
+        s["morale"] = max(0, s["morale"] - 8)
+        print("  !! Not enough WATER! The settlers are parched.")
+
+    if season_name(s) == "Winter":
+        need = max(1, (pop + 2) // 3) * (2 if s["weather"] == "Cold snap" else 1)
+        if r["wood"] >= need:
+            r["wood"] -= need
+            print(f"Winter: you burn {need} wood to keep warm.")
+        else:
+            r["wood"] = 0
+            s["morale"] = max(0, s["morale"] - 6)
+            print("  !! No firewood! The settlers shiver through the night.")
+            if random.random() < 0.5 and s["pop"] > s["sick"]:
+                s["sick"] += 1
+                print("  !! Someone catches a chill.")
+
+    if s["hunger"] >= 2:
+        lose_settlers(s, 1, "starvation")
+    if s["thirst"] >= 2:
+        lose_settlers(s, 1, "thirst")
+
+
+def health(s):
+    if s["sick"] <= 0:
+        return
+    t = s["tech"]
+    clinic = s["buildings"].get("Clinic", 0) > 0
+    healers = s["jobs"]["Healer"] if clinic else 0
+    power = healers * (2 if "Herbalism" in t else 1)
+    s["sick"] -= min(s["sick"], power)
+    while s["sick"] > 0 and s["res"]["medicine"] > 0:
+        s["res"]["medicine"] -= 1
+        s["sick"] -= min(2, s["sick"])
+        print("Medicine is used to treat the sick.")
+    s["sick"] -= sum(1 for _ in range(s["sick"]) if random.random() < 0.25)
+    chance = 0.08
+    if clinic:
+        chance = 0.04
+    if "Herbalism" in t:
+        chance /= 2
+    deaths = sum(1 for _ in range(s["sick"]) if random.random() < chance)
+    if deaths:
+        s["sick"] -= deaths
+        lose_settlers(s, deaths, "illness")
+    if s["sick"] > 0:
+        print(f"{s['sick']} settler(s) are still sick.")
+
+
+def morale_update(s):
+    s["morale"] += 3 * s["buildings"].get("Tavern", 0)
+    if idle_settlers(s) >= 3 and idle_settlers(s) * 2 > s["pop"]:
+        s["morale"] -= 2
+    if s["hunger"] == 0 and s["thirst"] == 0:
+        s["morale"] += 1
+    s["morale"] = max(0, min(100, s["morale"]))
+    if s["morale"] <= 10 and random.random() < 0.4:
+        lose_settlers(s, 1, "desertion (morale is dangerously low)")
+
+
+def arrivals(s):
+    if s["creative"] or s["pop"] >= housing(s):
+        return
+    if s["morale"] >= 60 and s["res"]["food"] >= s["pop"] * 3 and s["res"]["water"] >= s["pop"] * 3:
+        chance = 0.12 + (0.05 if s["buildings"].get("Tavern", 0) else 0)
+        if random.random() < chance:
+            s["pop"] += 1
+            print("A traveler heard good things about your colony and joins you.")
+
+
+def roll_weather(s):
+    season = season_name(s)
+    r = random.random()
+    if r < 0.12:
+        s["weather"] = "Storm"
+    elif r < 0.35:
+        s["weather"] = "Rain"
+    elif season == "Summer" and r < 0.55:
+        s["weather"] = "Heatwave"
+    elif season == "Winter" and r < 0.55:
+        s["weather"] = "Cold snap"
+    else:
+        s["weather"] = "Clear"
+
+
+def ship_chance(s):
+    c = 0.03 + (0.08 if s["buildings"].get("Dock", 0) else 0)
+    c += 0.05 if "Navigation" in s["tech"] else 0
+    c += 0.04 if "Misty Peak" in s["areas"] else 0
+    return c
+
+
+ACHIEVEMENTS = [
+    ("Roof Over Your Head", lambda s: s["buildings"].get("Hut", 0) >= 1),
+    ("A Week Survived", lambda s: s["day"] >= 8),
+    ("One Month Strong", lambda s: s["day"] >= 31),
+    ("Hundred Days", lambda s: s["day"] >= 101),
+    ("Little Village (10 settlers)", lambda s: s["pop"] >= 10),
+    ("Real Town (20 settlers)", lambda s: s["pop"] >= 20),
+    ("Builder (10 buildings)", lambda s: total_buildings(s) >= 10),
+    ("Thinker (3 techs)", lambda s: len(s["tech"]) >= 3),
+    ("Explorer (6 areas)", lambda s: len(s["areas"]) >= 6),
+    ("Pirate Slayer", lambda s: s["raids_won"] >= 1),
+    ("Rich (100 gold)", lambda s: s["res"]["gold"] >= 100),
+    ("Armed Camp (3 swords)", lambda s: s["tools"].get("Sword", 0) >= 3),
+]
+
+
+def check_achievements(s):
+    for title, fn in ACHIEVEMENTS:
+        if title not in s["ach"] and fn(s):
+            s["ach"].append(title)
+            print(f"\n*** ACHIEVEMENT UNLOCKED: {title} ***")
+
+
+def end_day(s):
+    print("\n" + "~" * 56)
+    print(f" Night falls on day {s['day']}...")
+    print("~" * 56)
+    old_season = season_name(s)
+    produce(s)
+    consume(s)
+    health(s)
+    morale_update(s)
+    arrivals(s)
+    if s["pop"] > 0 and not s["creative"]:
+        random_events(s)
+    if s["pop"] <= 0:
+        return
+    if random.random() < ship_chance(s) and s["ship"] == 0:
+        s["ship"] = 3
+        print("\nA trading ship drops anchor near your beach!")
+    elif s["ship"] > 0:
+        s["ship"] -= 1
+    s["day"] += 1
+    s["ap"] = 3 + (1 if s["morale"] >= 80 else 0)
+    roll_weather(s)
+    if season_name(s) != old_season:
+        print(f"\n=== The season changes: {season_name(s)} has arrived! ===")
+        if season_name(s) == "Winter":
+            print("Winter is coming. Farms slow down and you'll need firewood every night!")
+    check_achievements(s)
+
+
+# ============================ save / load ============================
+
+def save_game(s):
+    try:
+        with open(SAVE_FILE, "w") as f:
+            json.dump(s, f)
+        print(f"Game saved to {SAVE_FILE}.")
+    except OSError:
+        print("Sorry, the game could not be saved.")
+
+
+def load_game():
+    try:
+        with open(SAVE_FILE) as f:
+            s = json.load(f)
+        print("Game loaded.")
+        return s
+    except (OSError, ValueError):
+        print("No valid save file found.")
+        return None
+
+
+# ============================ main loop ============================
+
+def run_colony(s):
+    """Returns 'dead', 'quit', or 'load' (with s replaced via the return tuple)."""
+    while True:
+        header(s)
+        print(" 1) Gather        2) Build         3) Craft")
+        print(" 4) Explore       5) Assign jobs   6) Research")
+        print(" 7) Trade         8) Colony report 9) End the day")
+        print(" M) Use medicine  S) Save          L) Load      Q) Quit")
+        c = ask("> ", ["1", "2", "3", "4", "5", "6", "7", "8", "9", "m", "s", "l", "q"])
+        if c == "1":
+            gather(s)
+        elif c == "2":
+            build_menu(s)
+        elif c == "3":
+            craft_menu(s)
+        elif c == "4":
+            explore(s)
+        elif c == "5":
+            jobs_menu(s)
+        elif c == "6":
+            research_menu(s)
+        elif c == "7":
+            trade(s)
+        elif c == "8":
+            report(s)
+        elif c == "9":
+            end_day(s)
+            if s["pop"] <= 0:
+                return "dead", s
+        elif c == "m":
+            use_medicine(s)
+        elif c == "s":
+            save_game(s)
+        elif c == "l":
+            loaded = load_game()
+            if loaded:
+                s = loaded
+        elif c == "q":
+            return "quit", s
+
+
+def main():
+    print("=" * 56)
+    print("            C A S T A W A Y   C O L O N Y")
+    print("         An open-ended island sandbox game")
+    print("=" * 56)
+    try:
+        s = None
+        while True:
+            if s is None:
+                print("\n1) New colony   2) Load saved colony   3) Quit")
+                c = ask("> ", ["1", "2", "3"])
+                if c == "3":
+                    break
+                s = new_colony() if c == "1" else load_game()
+                if s is None:
+                    continue
+            result, s = run_colony(s)
+            if result == "dead":
+                print("\n" + "=" * 56)
+                print("  The colony has fallen. The island is quiet again...")
+                print("=" * 56)
+                print(f"You survived {s['day']} days.   FINAL SCORE: {score(s)}")
+                s = None
+                if ask("\nStart a new colony? (y/n): ", ["y", "n"]) == "n":
+                    break
+            else:
+                print(f"\nYou step away from the island. Score so far: {score(s)}")
+                break
+    except (EOFError, KeyboardInterrupt):
+        pass
+    print("Thanks for playing!")
+
+
+if __name__ == "__main__":
+    main()
